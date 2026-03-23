@@ -1,0 +1,12 @@
+.git
+__pycache__
+*.pyc
+*.md
+.env*
+.claude
+.omc
+.planning
+tests
+docs
+deploy
+*.log
