@@ -27,7 +27,7 @@ COPY gmail_scraper.py .
 COPY main.py .
 
 # Run as nonroot (uid 65532)
-RUN useradd -u 65532 -r -s /sbin/nologin nonroot
+RUN useradd --no-log-init -u 65532 -r -s /sbin/nologin nonroot
 USER nonroot
 
 # Run the web service on container startup.
