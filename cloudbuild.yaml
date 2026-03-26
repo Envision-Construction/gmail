@@ -34,11 +34,11 @@ steps:
     args:
       - '-c'
       - |
-        gcloud scheduler jobs delete gmail-scraper-hourly \
+        gcloud scheduler jobs delete gmail-scraper-5min \
           --location=us-central1 \
           --quiet 2>/dev/null || echo "No existing job to delete"
 
-  # Step 3: Create hourly scheduler job
+  # Step 3: Create 5-minute scheduler job
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'create-scheduler'
     entrypoint: bash
@@ -49,16 +49,16 @@ steps:
           --region=us-central1 \
           --format='value(status.url)')
 
-        gcloud scheduler jobs create http gmail-scraper-hourly \
+        gcloud scheduler jobs create http gmail-scraper-5min \
           --location=us-central1 \
-          --schedule="0 * * * *" \
+          --schedule="*/5 * * * *" \
           --time-zone="America/New_York" \
           --uri="$${SERVICE_URL}/" \
           --http-method=POST \
           --headers="Content-Type=application/json" \
           --message-body='{"incremental": true, "max_per_user": 100}' \
           --attempt-deadline=3600s \
-          --description="Hourly incremental Gmail scrape to BigQuery"
+          --description="5-minute incremental Gmail scrape to BigQuery"
 
 options:
   logging: CLOUD_LOGGING_ONLY

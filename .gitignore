@@ -19,3 +19,5 @@ ENV/
 
 # Output files
 all_company_emails.json
+venv/
+service_account.json

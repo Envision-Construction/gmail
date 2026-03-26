@@ -9,7 +9,7 @@ REGION="us-central1"
 SERVICE_ACCOUNT_EMAIL="claude-service-account@claude-mcp-457317.iam.gserviceaccount.com"
 SERVICE_ACCOUNT_KEY_FILE="$HOME/claude-mcp-457317-069a2a199017.json"
 ADMIN_EMAIL="avi@envsn.com"
-SCHEDULER_JOB_NAME="gmail-scraper-hourly"
+SCHEDULER_JOB_NAME="gmail-scraper-5min"
 
 echo "=== Gmail Scraper Cloud Run Deployment ==="
 echo "Project: $PROJECT_ID"
@@ -48,7 +48,7 @@ echo "Service URL: $SERVICE_URL"
 
 # Step 4: Set up Cloud Scheduler for hourly incremental scraping
 echo ""
-echo "Step 4: Setting up hourly Cloud Scheduler job..."
+echo "Step 4: Setting up 5-minute Cloud Scheduler job..."
 
 # Delete existing job if it exists
 gcloud scheduler jobs delete $SCHEDULER_JOB_NAME \
@@ -56,18 +56,18 @@ gcloud scheduler jobs delete $SCHEDULER_JOB_NAME \
   --location=$REGION \
   --quiet 2>/dev/null || true
 
-# Create new scheduler job (runs every hour at minute 0)
+# Create new scheduler job (runs every 5 minutes)
 gcloud scheduler jobs create http $SCHEDULER_JOB_NAME \
   --project=$PROJECT_ID \
   --location=$REGION \
-  --schedule="0 * * * *" \
+  --schedule="*/5 * * * *" \
   --time-zone="America/New_York" \
   --uri="${SERVICE_URL}/" \
   --http-method=POST \
   --headers="Content-Type=application/json" \
   --message-body='{"incremental": true, "max_per_user": 100}' \
   --attempt-deadline=3600s \
-  --description="Hourly incremental Gmail scrape to BigQuery"
+  --description="5-minute incremental Gmail scrape to BigQuery"
 
 echo ""
 echo "=== Deployment Complete ==="
@@ -77,7 +77,7 @@ echo "  URL: $SERVICE_URL"
 echo ""
 echo "Cloud Scheduler Job:"
 echo "  Name: $SCHEDULER_JOB_NAME"
-echo "  Schedule: Every hour at minute 0 (0 * * * *)"
+echo "  Schedule: Every 5 minutes (*/5 * * * *)"
 echo "  Timezone: America/New_York"
 echo "  Mode: Incremental (only new messages)"
 echo ""

@@ -1,0 +1,51 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: claude-mcp-457317
+  REGION: us-central1
+  SERVICE_NAME: gmail-scraper
+  SERVICE_ACCOUNT: claude-service-account@claude-mcp-457317.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Google Auth
+      id: auth
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+        service_account: claude-service-account@claude-mcp-457317.iam.gserviceaccount.com
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Deploy to Cloud Run
+      uses: google-github-actions/deploy-cloudrun@v2
+      with:
+        service: ${{ env.SERVICE_NAME }}
+        region: ${{ env.REGION }}
+        source: .
+        env_vars: |
+          PROJECT_ID=${{ env.PROJECT_ID }}
+          DATASET_ID=gmail_analytics
+          TABLE_ID=messages
+          ADMIN_EMAIL=avi@envsn.com
+        flags: '--allow-unauthenticated --service-account=${{ env.SERVICE_ACCOUNT }} --timeout=3600 --memory=2Gi --cpu=2 --max-instances=1 --cpu-boost'
+
+    - name: Update Cloud Scheduler
+      run: |
+        chmod +x setup_scheduler.sh
+        ./setup_scheduler.sh
