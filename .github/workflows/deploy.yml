@@ -43,7 +43,7 @@ jobs:
           DATASET_ID=gmail_analytics
           TABLE_ID=messages
           ADMIN_EMAIL=avi@envsn.com
-        flags: '--allow-unauthenticated --service-account=${{ env.SERVICE_ACCOUNT }} --timeout=3600 --memory=2Gi --cpu=2 --max-instances=1'
+        flags: '--allow-unauthenticated --service-account=${{ env.SERVICE_ACCOUNT }} --timeout=3600 --memory=2Gi --cpu=2 --max-instances=1 --startup-cpu-boost'
 
     - name: Update Cloud Scheduler
       run: |
