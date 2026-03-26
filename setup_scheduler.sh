@@ -50,7 +50,7 @@ gcloud scheduler jobs create http $JOB_NAME \
   --http-method=POST \
   --headers="Content-Type=application/json" \
   --message-body='{"incremental": true, "max_per_user": 100}' \
-  --attempt-deadline=3600s \
+  --attempt-deadline=1800s \
   --description="Hourly incremental Gmail scrape to BigQuery"
 
 echo ""
