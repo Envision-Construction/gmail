@@ -1,118 +1,114 @@
-# Gmail Scraper - Cloud Run Deployment
+# Gmail Scraper — Cloud Run
 
-This project scrapes Gmail messages from your Google Workspace domain and stores them in BigQuery.
+Domain-wide Gmail ingestion service. Pulls Workspace messages via the Gmail API
+and writes them to BigQuery for the Envision context layer.
 
 ## Architecture
 
-- **Cloud Run**: Hosts the Gmail scraper service
-- **BigQuery**: Stores scraped email data (`claude-mcp-457317.gmail_analytics.messages`)
-- **Gmail API**: Accesses email data via domain-wide delegation
-- **Admin Directory API**: Lists all users in the domain
+- **Cloud Run** — hosts the HTTP function (`run_scraper`)
+- **BigQuery** — destination table `claude-mcp-457317.gmail_analytics.messages`
+- **Gmail API** — read-only access via domain-wide delegation
+- **Admin Directory API** — enumerates users in the Workspace domain
+- **Cloud Scheduler** — invokes the service every 5 minutes (`gmail-scraper-5min`)
+- **Secret Manager** — holds any credentials required for delegated impersonation
+- **Workload Identity Federation (WIF)** — GitHub Actions auth to GCP, no JSON keys
 
-## Prerequisites
+## Deploy
 
-1. A Google Cloud Project (`claude-mcp-457317`)
-2. A Service Account with Domain-Wide Delegation enabled
-3. The Service Account JSON key file
-4. BigQuery dataset `gmail_analytics` created in your project
+Production deploys are fully automated. Push to `main`:
 
-### Required Service Account Permissions
+```bash
+git push origin main
+```
 
-- `roles/bigquery.dataEditor` - To write to BigQuery
-- `roles/bigquery.jobUser` - To run BigQuery jobs
+The `.github/workflows/deploy.yml` workflow then:
+
+1. Authenticates to GCP via WIF (no key files involved).
+2. Deploys to Cloud Run as
+   `claude-service-account@claude-mcp-457317.iam.gserviceaccount.com`.
+3. Re-creates the `gmail-scraper-5min` Cloud Scheduler job via
+   `setup_scheduler.sh`.
+
+Watch a deploy:
+
+```bash
+gh run watch
+```
+
+> Do **not** run `gcloud run deploy` from a developer laptop. The source of
+> truth for the live service is `main`, and the GitHub Actions pipeline is the
+> only path that mutates production.
+
+## Local development
+
+Use Application Default Credentials — no service-account JSON file is needed
+or wanted:
+
+```bash
+gcloud auth application-default login
+gcloud config set project claude-mcp-457317
+
+pip install -r requirements.txt
+functions-framework --target=run_scraper --debug
+```
+
+Test locally:
+
+```bash
+curl -X POST localhost:8080 \
+  -H 'Content-Type: application/json' \
+  -d '{"incremental": true, "max_per_user": 10}'
+```
+
+## Service account & permissions
+
+Runtime SA: `claude-service-account@claude-mcp-457317.iam.gserviceaccount.com`
+
+- `roles/bigquery.dataEditor` — writes to BigQuery
+- `roles/bigquery.jobUser` — runs BigQuery jobs
 - Domain-wide delegation scopes:
   - `https://www.googleapis.com/auth/gmail.readonly`
   - `https://www.googleapis.com/auth/admin.directory.user.readonly`
 
-## Quick Deployment
-
-### Option 1: Using deploy.sh script
-
-```bash
-# 1. Ensure you have the service account key at:
-#    ~/claude-mcp-457317-069a2a199017.json
-
-# 2. Authenticate gcloud
-gcloud auth login
-
-# 3. Run deployment
-./deploy.sh
-```
-
-### Option 2: Using Cloud Build (Recommended)
-
-```bash
-# 1. Authenticate
-gcloud auth login
-gcloud config set project claude-mcp-457317
-
-# 2. Copy service account key to project directory
-cp ~/claude-mcp-457317-069a2a199017.json ./service-account-key.json
-
-# 3. Submit build
-gcloud builds submit --config=cloudbuild.yaml
-```
-
-### Option 3: Manual Deployment
-
-```bash
-# 1. Authenticate
-gcloud auth login
-gcloud config set project claude-mcp-457317
-
-# 2. Copy service account key
-cp ~/claude-mcp-457317-069a2a199017.json ./service-account-key.json
-
-# 3. Deploy to Cloud Run
-gcloud run deploy gmail-scraper \
-  --source . \
-  --project=claude-mcp-457317 \
-  --region=us-central1 \
-  --platform=managed \
-  --allow-unauthenticated \
-  --service-account=claude-service-account@claude-mcp-457317.iam.gserviceaccount.com \
-  --set-env-vars="PROJECT_ID=claude-mcp-457317,DATASET_ID=gmail_analytics,TABLE_ID=messages,ADMIN_EMAIL=avi@envsn.com" \
-  --timeout=3600 \
-  --memory=2Gi \
-  --cpu=2 \
-  --max-instances=1
-```
+If anything that resembles an SA JSON key ever ends up on disk, treat it as a
+secret leak: rotate immediately in **GCP Console → IAM → Service Accounts → Keys**
+and `git rm` / `git filter-repo` if it landed in the repo.
 
 ## Usage
 
-### Health Check (GET)
+### Health check (GET)
 
 ```bash
 curl https://YOUR-SERVICE-URL/
 ```
 
-Response:
 ```json
 {
   "status": "healthy",
   "service": "gmail-scraper",
   "project": "claude-mcp-457317",
   "dataset": "gmail_analytics",
-  "table": "messages"
+  "table": "messages",
+  "mode": "incremental"
 }
 ```
 
-### Trigger Scrape (POST)
+### Trigger scrape (POST)
 
 ```bash
 curl -X POST https://YOUR-SERVICE-URL/ \
   -H 'Content-Type: application/json' \
-  -d '{
-    "query": "after:2024/12/01",
-    "max_per_user": 100
-  }'
+  -d '{"incremental": true, "max_per_user": 100}'
 ```
 
 Parameters:
-- `query`: Gmail search query (e.g., `after:2024/12/01`, `subject:RFI`)
-- `max_per_user`: Maximum emails to scrape per user (default: 100)
+
+- `query` — Gmail search query (e.g. `after:2024/12/01`, `subject:RFI`)
+- `max_per_user` — cap per mailbox (default `100`)
+- `incremental` — only fetch new messages since last run (default `true`)
 
 Response:
+
 ```json
 {
   "status": "completed",
@@ -123,35 +119,33 @@ Response:
 }
 ```
 
-## BigQuery Schema
-
-The `messages` table has the following schema:
+## BigQuery schema
 
 | Field | Type | Description |
 |-------|------|-------------|
 | message_id | STRING | Gmail message ID |
 | thread_id | STRING | Gmail thread ID |
-| user_email | STRING | Email address of the mailbox owner |
-| from_address | STRING | Sender email address |
-| to_address | STRING | Recipient email addresses |
+| user_email | STRING | Mailbox owner |
+| from_address | STRING | Sender |
+| to_address | STRING | Recipients |
 | cc_address | STRING | CC recipients |
 | bcc_address | STRING | BCC recipients |
 | subject | STRING | Email subject |
-| body_snippet | STRING | Short preview of body (500 chars) |
+| body_snippet | STRING | First 500 chars of body |
 | body_text | STRING | Full plain text body |
-| date_sent | TIMESTAMP | When the email was sent |
+| date_sent | TIMESTAMP | When sent |
 | label_ids | STRING (REPEATED) | Gmail labels |
-| is_unread | BOOLEAN | Whether email is unread |
-| has_attachments | BOOLEAN | Whether email has attachments |
+| is_unread | BOOLEAN | Unread flag |
+| has_attachments | BOOLEAN | Has attachments |
 | attachment_count | INTEGER | Number of attachments |
-| size_estimate | INTEGER | Estimated size in bytes |
-| scraped_at | TIMESTAMP | When the email was scraped |
+| size_estimate | INTEGER | Estimated size (bytes) |
+| scraped_at | TIMESTAMP | Ingest time |
 
-## Query Examples
+## Sample queries
 
 ```sql
 -- Count emails by user
-SELECT user_email, COUNT(*) as email_count
+SELECT user_email, COUNT(*) AS email_count
 FROM `claude-mcp-457317.gmail_analytics.messages`
 GROUP BY user_email
 ORDER BY email_count DESC;
@@ -164,36 +158,30 @@ WHERE has_attachments = TRUE
 ORDER BY date_sent DESC;
 
 -- Unread emails by user
-SELECT user_email, COUNT(*) as unread_count
+SELECT user_email, COUNT(*) AS unread_count
 FROM `claude-mcp-457317.gmail_analytics.messages`
 WHERE is_unread = TRUE
 GROUP BY user_email;
 ```
 
-## Local Development
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Set environment variables
-export SERVICE_ACCOUNT_FILE="/path/to/service-account-key.json"
-export ADMIN_EMAIL="avi@envsn.com"
-export PROJECT_ID="claude-mcp-457317"
-export DATASET_ID="gmail_analytics"
-export TABLE_ID="messages"
-
-# Run locally
-functions-framework --target=run_scraper --debug
-
-# Test
-curl -X POST localhost:8080 \
-  -H 'Content-Type: application/json' \
-  -d '{"query": "after:2024/12/01", "max_per_user": 10}'
-```
-
 ## Troubleshooting
 
-1. **Authentication errors**: Ensure domain-wide delegation is configured correctly
-2. **BigQuery errors**: Verify the service account has BigQuery permissions
-3. **Timeout errors**: Increase `--timeout` or reduce `max_per_user`
+1. **Auth errors** — verify domain-wide delegation is configured for the SA in
+   the Workspace Admin console (Security → API controls → Domain-wide delegation).
+2. **BigQuery errors** — confirm the SA has `bigquery.dataEditor` + `bigquery.jobUser`
+   on `claude-mcp-457317`.
+3. **Timeout errors** — Cloud Run timeout is 1h; reduce `max_per_user` or
+   batch by query window.
+4. **Scheduler attempt-deadline** — capped at 1800s (30m), see
+   `setup_scheduler.sh`.
+
+## Downstream consumers
+
+This pipeline feeds Envision-MCP:
+
+- `query_gmail_analytics` MCP tool
+- `grounding_sync_pipeline.py`
+- `streaming/channels/gmail.py`
+- `email_sync_locks`
+
+Breakage here cascades — verify BigQuery row-count growth after any deploy.

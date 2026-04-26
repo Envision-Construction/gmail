@@ -1,6 +1,8 @@
 # Service account keys - NEVER commit these
 service-account-key.json
 *-key.json
+*-credentials.json
+*credentials*.json
 *.json.bak
 
 # Python
