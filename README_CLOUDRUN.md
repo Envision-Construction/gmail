@@ -5,12 +5,14 @@ and writes them to BigQuery for the Envision context layer.
 
 ## Architecture
 
-- **Cloud Run** — hosts the HTTP function (`run_scraper`)
+- **Cloud Run** — hosts the HTTP function (`run_scraper`); deployed with
+  `--no-allow-unauthenticated`, so every invocation must carry an identity
+  with `roles/run.invoker` on the service
 - **BigQuery** — destination table `claude-mcp-457317.gmail_analytics.messages`
 - **Gmail API** — read-only access via domain-wide delegation
 - **Admin Directory API** — enumerates users in the Workspace domain
 - **Cloud Scheduler** — invokes the service every 5 minutes (`gmail-scraper-5min`)
-- **Secret Manager** — holds any credentials required for delegated impersonation
+  with an OIDC token minted as the service account below
 - **Workload Identity Federation (WIF)** — GitHub Actions auth to GCP, no JSON keys
 
 ## Deploy
@@ -23,11 +25,18 @@ git push origin main
 
 The `.github/workflows/deploy.yml` workflow then:
 
-1. Authenticates to GCP via WIF (no key files involved).
+1. Authenticates to GCP via WIF (no key files involved). All workflow actions
+   are pinned to full-length commit SHAs (org policy — unpinned actions are
+   rejected before the workflow starts).
 2. Deploys to Cloud Run as
-   `claude-service-account@claude-mcp-457317.iam.gserviceaccount.com`.
-3. Re-creates the `gmail-scraper-5min` Cloud Scheduler job via
-   `setup_scheduler.sh`.
+   `claude-service-account@claude-mcp-457317.iam.gserviceaccount.com`, with
+   `--no-allow-unauthenticated` (no public invocation).
+3. Grants that service account `roles/run.invoker` on the service and fails
+   the deploy if a public binding (`allUsers` / `allAuthenticatedUsers`) is
+   ever present.
+4. Updates the `gmail-scraper-5min` Cloud Scheduler job in place (creating it
+   if missing) with OIDC authentication (see the "Update Cloud Scheduler
+   (OIDC)" workflow step).
 
 Watch a deploy:
 
@@ -66,6 +75,14 @@ Runtime SA: `claude-service-account@claude-mcp-457317.iam.gserviceaccount.com`
 
 - `roles/bigquery.dataEditor` — writes to BigQuery
 - `roles/bigquery.jobUser` — runs BigQuery jobs
+- `roles/run.invoker` on `gmail-scraper` — lets Cloud Scheduler invoke the
+  service with an OIDC token asserting this identity (granted by the deploy
+  workflow). Invocation requires minting an identity token as this SA — that
+  includes Cloud Scheduler, the CI deploy identity, and any principal with
+  token-creator/actAs rights on the SA. No unauthenticated caller can invoke
+  it. (Follow-up hardening: a dedicated `gmail-scraper-invoker@` SA for the
+  scheduler would shrink this surface, since this shared SA also carries
+  BigQuery write and domain-wide delegation.)
 - Domain-wide delegation scopes:
   - `https://www.googleapis.com/auth/gmail.readonly`
   - `https://www.googleapis.com/auth/admin.directory.user.readonly`
@@ -76,10 +93,14 @@ and `git rm` / `git filter-repo` if it landed in the repo.
 
 ## Usage
 
+Invocation requires authentication (`roles/run.invoker` on the service);
+unauthenticated requests get `403`. For ad-hoc calls, send an identity token:
+
 ### Health check (GET)
 
 ```bash
-curl https://YOUR-SERVICE-URL/
+curl https://YOUR-SERVICE-URL/ \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)"
 ```
 
 ```json
@@ -97,9 +118,13 @@ curl https://YOUR-SERVICE-URL/
 
 ```bash
 curl -X POST https://YOUR-SERVICE-URL/ \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
   -H 'Content-Type: application/json' \
   -d '{"incremental": true, "max_per_user": 100}'
 ```
+
+(Or trigger through the scheduler, which sends its own OIDC token:
+`gcloud scheduler jobs run gmail-scraper-5min --project=claude-mcp-457317 --location=us-central1`.)
 
 Parameters:
 
@@ -164,16 +189,39 @@ WHERE is_unread = TRUE
 GROUP BY user_email;
 ```
 
+## Known issue — runtime Gmail credentials (scrape path broken)
+
+`gmail_scraper.py` builds credentials exclusively from a service-account key
+file (`SERVICE_ACCOUNT_FILE`, default `./service-account-key.json`) via
+`from_service_account_file`; there is no ADC fallback and no Secret Manager
+integration. The Docker image copies only `main.py` and `gmail_scraper.py`
+(no key — correct, keys must never ship), and the deploy sets no
+`SERVICE_ACCOUNT_FILE` env var and mounts no secret.
+
+Net effect: every scheduled POST fails at runtime with
+`{"status": "failed", "error": "... service-account-key.json ..."}` (HTTP 200),
+and no rows land in BigQuery. Verified 2026-08-02: the last successful deploy
+was 2026-03-26, so production has been in this state since then.
+
+Fixing this means reworking `get_service_account_credentials()` for keyless
+domain-wide delegation (IAM `signJwt` as the runtime SA) or mounting a key
+from Secret Manager — an owner decision with Workspace-admin implications,
+deliberately **not** bundled into the invocation-auth hardening. Until then,
+`403` responses mean invocation auth; `status: failed` responses mean this.
+
 ## Troubleshooting
 
-1. **Auth errors** — verify domain-wide delegation is configured for the SA in
-   the Workspace Admin console (Security → API controls → Domain-wide delegation).
-2. **BigQuery errors** — confirm the SA has `bigquery.dataEditor` + `bigquery.jobUser`
+1. **`403` on invocation** — the caller lacks `roles/run.invoker` (or sent no
+   identity token). The service does not allow unauthenticated invocation.
+2. **Auth errors in scrape results** — see "Known issue" above; also verify
+   domain-wide delegation is configured for the SA in the Workspace Admin
+   console (Security → API controls → Domain-wide delegation).
+3. **BigQuery errors** — confirm the SA has `bigquery.dataEditor` + `bigquery.jobUser`
    on `claude-mcp-457317`.
-3. **Timeout errors** — Cloud Run timeout is 1h; reduce `max_per_user` or
+4. **Timeout errors** — Cloud Run timeout is 1h; reduce `max_per_user` or
    batch by query window.
-4. **Scheduler attempt-deadline** — capped at 1800s (30m), see
-   `setup_scheduler.sh`.
+5. **Scheduler attempt-deadline** — capped at 1800s (30m), see the
+   "Update Cloud Scheduler (OIDC)" step in `.github/workflows/deploy.yml`.
 
 ## Downstream consumers
 
