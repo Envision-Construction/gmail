@@ -31,11 +31,15 @@ There are no tests to run. If you add logic, adding the first tests is welcome b
 ## Deploy
 
 Push to `main` deploys. `.github/workflows/deploy.yml` authenticates via Workload Identity Federation,
-does a source deploy of Cloud Run service `gmail-scraper` (us-central1), then runs `./setup_scheduler.sh`,
-which deletes and recreates the Cloud Scheduler job `gmail-scraper-5min` (POST every 5 minutes,
-`{"incremental": true, "max_per_user": 100}`, attempt deadline 1800s).
-`deploy.sh` and `cloudbuild.yaml` are older manual paths kept in-repo; do not use them for routine work,
-the CI workflow is the current mechanism (see recent `fix(ci)` commits). Never deploy by hand.
+does a source deploy of Cloud Run service `gmail-scraper` (us-central1) with `--no-allow-unauthenticated`,
+grants the runtime SA `roles/run.invoker` (and fails if a public `allUsers`/`allAuthenticatedUsers`
+binding is present), then updates-in-place (or creates) the Cloud Scheduler job `gmail-scraper-5min`
+(POST every 5 minutes with an OIDC token, `{"incremental": true, "max_per_user": 100}`, attempt
+deadline 1800s). The scheduler step never deletes the job, so a failed deploy cannot strand the cadence. Org policy requires every action
+in the workflow to be pinned to a full-length commit SHA — an unpinned `@vN` reference kills the run
+before any step executes (this silently blocked all deploys 2026-04 → 2026-08).
+`deploy.sh` is informational-only notes; `setup_scheduler.sh` and `cloudbuild.yaml` no longer exist
+(the Cloud Build routing from PR #4 never ran green and was removed 2026-08-02). Never deploy by hand.
 
 ## Constraints and gotchas
 
@@ -43,23 +47,28 @@ the CI workflow is the current mechanism (see recent `fix(ci)` commits). Never d
   (default `./service-account-key.json`) via `from_service_account_file`, then `with_subject()` for
   domain-wide delegation. There is NO ADC fallback: without the key file, every POST fails
   (GET health check still works). The `Dockerfile` copies only `main.py` and `gmail_scraper.py`,
-  no key is baked into the image.
+  no key is baked into the image — so the deployed scrape path currently fails at runtime
+  (`status: failed`, HTTP 200). See "Known issue" in `README_CLOUDRUN.md`; fixing runtime auth is
+  an owner decision, not a drive-by fix.
 - NEVER commit keys. `.gitignore` already blocks `service-account-key.json` and `*-key.json`; keep it so.
 - Env vars (defaults in `gmail_scraper.py`, set for prod in `deploy.yml`): `PROJECT_ID`, `DATASET_ID`,
   `TABLE_ID`, `ADMIN_EMAIL`, `SERVICE_ACCOUNT_FILE`. Container listens on port 8080.
 - Required scopes: `gmail.readonly` + `admin.directory.user.readonly` (domain-wide delegation) and
   BigQuery write roles. See `README_CLOUDRUN.md` prerequisites.
-- The service is deployed `--allow-unauthenticated` (see `deploy.yml` flags): anyone with the URL can
-  trigger a scrape. Do not paste the service URL into public places, and treat auth-posture changes as
-  a deliberate decision with the owner, not a drive-by fix.
+- The service requires authenticated invocation (`--no-allow-unauthenticated`, hardened 2026-08-02
+  security sweep): only identities with `roles/run.invoker` can call it, and Cloud Scheduler sends an
+  OIDC token as `claude-service-account@claude-mcp-457317.iam.gserviceaccount.com`. The deploy fails
+  if a public (`allUsers`/`allAuthenticatedUsers`) binding reappears. Treat any loosening of this
+  posture as a deliberate decision with the owner, never a convenience change.
 - Data sensitivity: the BigQuery table holds full email bodies for the entire Workspace domain.
   Never dump row contents into logs, PR descriptions, or fixtures.
 - BigQuery schema (17 columns) is created at runtime by `ensure_table_exists`; if you change it,
   update the schema table in `README_CLOUDRUN.md` to match.
 - Incremental mode dedups against existing `message_id`s and uses `MAX(date_sent)` as the cursor;
   full rescrapes are triggered with `"incremental": false`.
-- Every deploy recreates the scheduler job, so scheduler edits made in the console will be overwritten;
-  change `setup_scheduler.sh` instead.
+- Every deploy updates the scheduler job in place (flag-specified fields are overwritten; the job is
+  created if missing), so console edits to those fields will not survive a deploy; change the
+  "Update Cloud Scheduler (OIDC)" step in `.github/workflows/deploy.yml` instead.
 
 ## Planning context
 
