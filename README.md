@@ -5,7 +5,9 @@ layer.
 
 Deploys are automated: push to `main` triggers `.github/workflows/deploy.yml`
 which uses Workload Identity Federation (no service-account JSON keys) to ship
-to Cloud Run, then re-creates the `gmail-scraper-5min` scheduler.
+to Cloud Run, then updates the `gmail-scraper-5min` scheduler job in place. The service
+only accepts authenticated invocations (`roles/run.invoker`); the scheduler
+calls it with an OIDC token.
 
 For local dev, use `gcloud auth application-default login` — never copy SA
 key files into this repo.

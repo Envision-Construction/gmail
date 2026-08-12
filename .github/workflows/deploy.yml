@@ -5,10 +5,18 @@ on:
     branches:
       - main
 
+# Serialize deploys: concurrent runs would race the source deploy and the
+# scheduler update. Never cancel a run mid-flight (it mutates prod state).
+concurrency:
+  group: deploy-gmail-scraper
+  cancel-in-progress: false
+
 env:
   PROJECT_ID: claude-mcp-457317
   REGION: us-central1
   SERVICE_NAME: gmail-scraper
+  SERVICE_ACCOUNT: claude-service-account@claude-mcp-457317.iam.gserviceaccount.com
+  SCHEDULER_JOB: gmail-scraper-5min
 
 jobs:
   deploy:
@@ -18,23 +26,104 @@ jobs:
       id-token: write
 
     steps:
+    # Org policy requires all actions pinned to a full-length commit SHA.
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
 
     - name: Google Auth
       id: auth
-      uses: google-github-actions/auth@v2
+      uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
       with:
         workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
         service_account: claude-service-account@claude-mcp-457317.iam.gserviceaccount.com
 
     - name: Set up Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
+      uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
 
-    - name: Submit Cloud Build (deploy + scheduler)
+    - name: Deploy to Cloud Run (authenticated invocations only)
+      id: deploy
+      uses: google-github-actions/deploy-cloudrun@251330ba9a8a34bfbc1622895f42e1d53fd14522 # v2.7.6
+      with:
+        service: ${{ env.SERVICE_NAME }}
+        region: ${{ env.REGION }}
+        source: .
+        env_vars: |
+          PROJECT_ID=${{ env.PROJECT_ID }}
+          DATASET_ID=gmail_analytics
+          TABLE_ID=messages
+          ADMIN_EMAIL=avi@envsn.com
+          SERVICE_ACCOUNT_FILE=/secrets/key.json
+        # Gmail domain-wide delegation impersonates every mailbox and needs a
+        # signing key; ADC cannot mint a DWD subject assertion. The key is
+        # never committed and never baked into the image: Cloud Run resolves
+        # it from Secret Manager at start. env_vars/secrets here are
+        # declarative (the action passes --set-env-vars/--set-secrets, which
+        # REPLACE), so both must stay or a deploy silently strips runtime auth.
+        secrets: |
+          /secrets/key.json=gmail-scraper-sa-key:latest
+        flags: '--no-allow-unauthenticated --service-account=${{ env.SERVICE_ACCOUNT }} --timeout=3600 --memory=2Gi --cpu=2 --max-instances=1 --cpu-boost'
+
+    - name: Grant Cloud Scheduler invoker access
       run: |
-        gcloud builds submit \
+        gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
           --project="${PROJECT_ID}" \
           --region="${REGION}" \
-          --config=cloudbuild.yaml \
-          .
+          --member="serviceAccount:${SERVICE_ACCOUNT}" \
+          --role="roles/run.invoker"
+
+    - name: Verify no public access
+      run: |
+        POLICY=$(gcloud run services get-iam-policy "${SERVICE_NAME}" \
+          --project="${PROJECT_ID}" \
+          --region="${REGION}" \
+          --format=json)
+        if echo "${POLICY}" | grep -Eq '"allUsers"|"allAuthenticatedUsers"'; then
+          echo "ERROR: ${SERVICE_NAME} grants a public principal (allUsers/allAuthenticatedUsers) — public invocation must stay removed."
+          exit 1
+        fi
+        echo "OK: no public binding on ${SERVICE_NAME}."
+
+    # Runs last, and never deletes: an earlier-step failure skips this step
+    # entirely, and a failure inside it leaves the previous job in place —
+    # either way the 5-minute cadence keeps a scheduler job.
+    - name: Update Cloud Scheduler (OIDC)
+      env:
+        SERVICE_URL: ${{ steps.deploy.outputs.url }}
+      run: |
+        if [ -z "${SERVICE_URL}" ]; then
+          echo "ERROR: deploy step produced no service URL; refusing to touch the scheduler."
+          exit 1
+        fi
+
+        if gcloud scheduler jobs describe "${SCHEDULER_JOB}" \
+             --project="${PROJECT_ID}" --location="${REGION}" >/dev/null 2>&1; then
+          gcloud scheduler jobs update http "${SCHEDULER_JOB}" \
+            --project="${PROJECT_ID}" \
+            --location="${REGION}" \
+            --schedule="*/5 * * * *" \
+            --time-zone="America/New_York" \
+            --uri="${SERVICE_URL}/" \
+            --http-method=POST \
+            --update-headers="Content-Type=application/json" \
+            --message-body='{"incremental": true, "max_per_user": 100}' \
+            --oidc-service-account-email="${SERVICE_ACCOUNT}" \
+            --oidc-token-audience="${SERVICE_URL}" \
+            --attempt-deadline=1800s \
+            --description="5-minute incremental Gmail scrape to BigQuery (OIDC-authenticated)"
+        else
+          gcloud scheduler jobs create http "${SCHEDULER_JOB}" \
+            --project="${PROJECT_ID}" \
+            --location="${REGION}" \
+            --schedule="*/5 * * * *" \
+            --time-zone="America/New_York" \
+            --uri="${SERVICE_URL}/" \
+            --http-method=POST \
+            --headers="Content-Type=application/json" \
+            --message-body='{"incremental": true, "max_per_user": 100}' \
+            --oidc-service-account-email="${SERVICE_ACCOUNT}" \
+            --oidc-token-audience="${SERVICE_URL}" \
+            --attempt-deadline=1800s \
+            --description="5-minute incremental Gmail scrape to BigQuery (OIDC-authenticated)"
+        fi
