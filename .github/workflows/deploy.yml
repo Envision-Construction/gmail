@@ -54,6 +54,15 @@ jobs:
           DATASET_ID=gmail_analytics
           TABLE_ID=messages
           ADMIN_EMAIL=avi@envsn.com
+          SERVICE_ACCOUNT_FILE=/secrets/key.json
+        # Gmail domain-wide delegation impersonates every mailbox and needs a
+        # signing key; ADC cannot mint a DWD subject assertion. The key is
+        # never committed and never baked into the image: Cloud Run resolves
+        # it from Secret Manager at start. env_vars/secrets here are
+        # declarative (the action passes --set-env-vars/--set-secrets, which
+        # REPLACE), so both must stay or a deploy silently strips runtime auth.
+        secrets: |
+          /secrets/key.json=gmail-scraper-sa-key:latest
         flags: '--no-allow-unauthenticated --service-account=${{ env.SERVICE_ACCOUNT }} --timeout=3600 --memory=2Gi --cpu=2 --max-instances=1 --cpu-boost'
 
     - name: Grant Cloud Scheduler invoker access

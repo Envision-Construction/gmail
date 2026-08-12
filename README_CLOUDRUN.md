@@ -189,25 +189,34 @@ WHERE is_unread = TRUE
 GROUP BY user_email;
 ```
 
-## Known issue — runtime Gmail credentials (scrape path broken)
+## Runtime Gmail credentials (resolved 2026-08-11)
 
-`gmail_scraper.py` builds credentials exclusively from a service-account key
-file (`SERVICE_ACCOUNT_FILE`, default `./service-account-key.json`) via
-`from_service_account_file`; there is no ADC fallback and no Secret Manager
-integration. The Docker image copies only `main.py` and `gmail_scraper.py`
-(no key — correct, keys must never ship), and the deploy sets no
-`SERVICE_ACCOUNT_FILE` env var and mounts no secret.
+`gmail_scraper.py` builds credentials from a service-account key file
+(`SERVICE_ACCOUNT_FILE`) via `from_service_account_file`; there is no ADC
+fallback, because Gmail domain-wide delegation impersonates each mailbox and
+ADC cannot mint a DWD subject assertion.
 
-Net effect: every scheduled POST fails at runtime with
-`{"status": "failed", "error": "... service-account-key.json ..."}` (HTTP 200),
-and no rows land in BigQuery. Verified 2026-08-02: the last successful deploy
-was 2026-03-26, so production has been in this state since then.
+The key is never committed and never baked into the image. The deploy mounts
+it from Secret Manager (`gmail-scraper-sa-key`) at `/secrets/key.json` and
+sets `SERVICE_ACCOUNT_FILE` to that path; see the deploy step in
+`.github/workflows/deploy.yml`.
 
-Fixing this means reworking `get_service_account_credentials()` for keyless
-domain-wide delegation (IAM `signJwt` as the runtime SA) or mounting a key
-from Secret Manager — an owner decision with Workspace-admin implications,
-deliberately **not** bundled into the invocation-auth hardening. Until then,
-`403` responses mean invocation auth; `status: failed` responses mean this.
+History: between 2026-05-06 and 2026-08-11 the deploy carried neither the
+mount nor the env var, so every scheduled POST failed at runtime and no rows
+landed in BigQuery. The 5-minute scheduler crash-looped for three months
+because `alloydb_conn` was bound inside the `try`, so the `finally` raised
+`UnboundLocalError` over the real `FileNotFoundError`. Both are fixed; the
+mount now lives in the workflow, so a redeploy cannot silently strip it
+(`env_vars`/`secrets` are passed as `--set-env-vars`/`--set-secrets`, which
+replace rather than merge).
+
+Remaining hardening option: rework `get_service_account_credentials()` for
+keyless DWD (IAM `signJwt` as the runtime SA), which removes the key file
+entirely. Owner decision with Workspace-admin implications; not required for
+correct operation today.
+
+Reading failures: `403` responses mean invocation auth; `status: failed`
+responses mean runtime credentials.
 
 ## Troubleshooting
 

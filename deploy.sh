@@ -13,11 +13,15 @@
 # (the same SA the service runs as; the workflow grants it run.invoker and
 # updates the `gmail-scraper-5min` job in place with OIDC on every deploy).
 #
-# NOTE (runtime Gmail auth, known issue): gmail_scraper.py loads a service
-# account KEY FILE (SERVICE_ACCOUNT_FILE, default ./service-account-key.json)
-# and has no ADC fallback. The image ships no key and the deploy mounts no
-# secret, so scrape POSTs currently fail at runtime with status "failed".
-# See "Known issue" in README_CLOUDRUN.md before touching auth code.
+# NOTE (runtime Gmail auth): gmail_scraper.py loads a service-account KEY FILE
+# (SERVICE_ACCOUNT_FILE) and has no ADC fallback, because Gmail domain-wide
+# delegation needs a signing key ADC cannot provide. The image ships no key;
+# the workflow mounts it from Secret Manager (gmail-scraper-sa-key) at
+# /secrets/key.json and points SERVICE_ACCOUNT_FILE there. Keep both the
+# env_vars and secrets blocks in deploy.yml: they are passed as
+# --set-env-vars/--set-secrets, which REPLACE, so dropping either silently
+# strips runtime auth (that is how ingestion died 2026-05-06 to 2026-08-11).
+# See "Runtime Gmail credentials" in README_CLOUDRUN.md before touching auth.
 #
 # DO NOT run `gcloud run deploy` from a developer laptop in production —
 # the source of truth is `main`, and the deploy pipeline is the only path
