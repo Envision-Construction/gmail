@@ -439,6 +439,12 @@ def main(query='', max_per_user=100, incremental=True):
         'errors': []
     }
 
+    # Must be bound before the try: the finally below touches it, and an
+    # exception during BigQuery init otherwise raises UnboundLocalError that
+    # masks the real failure (this hid a missing-credentials error for 3
+    # months of 5-minute crash-loops, 2026-05-06 to 2026-08-11).
+    alloydb_conn = None
+
     try:
         # Initialize BigQuery
         print("Initializing BigQuery client...")
@@ -446,7 +452,6 @@ def main(query='', max_per_user=100, incremental=True):
         table_ref = ensure_table_exists(bq_client)
 
         # Initialize AlloyDB (optional dual-write)
-        alloydb_conn = None
         if ALLOYDB_URL:
             print("Initializing AlloyDB connection...")
             alloydb_conn = get_alloydb_connection()
