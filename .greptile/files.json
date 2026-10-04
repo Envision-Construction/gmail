@@ -1,0 +1,35 @@
+{
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "description": "Consult when a change touches any file in this repository: defines what the scraper is and is not, its commands, deploy path, credential model and data-handling constraints.",
+      "scope": [
+        "**/*"
+      ]
+    },
+    {
+      "path": "README_CLOUDRUN.md",
+      "description": "Consult when a change touches the row schema, runtime credentials or invocation auth: defines the BigQuery schema table, the delegation scopes, the runtime credential model and the downstream readers of the table.",
+      "scope": [
+        "gmail_scraper.py",
+        "main.py",
+        ".github/workflows/deploy.yml"
+      ]
+    },
+    {
+      "path": ".github/workflows/deploy.yml",
+      "description": "Consult when a change reads an environment variable, loads credentials or depends on the scheduler request: defines the production env vars, the key mount, the invocation flags and the scheduler request body.",
+      "scope": [
+        "**/*.py",
+        "Dockerfile"
+      ]
+    },
+    {
+      "path": "Dockerfile",
+      "description": "Consult when a change adds, renames or moves a Python module: defines which files the runtime image copies.",
+      "scope": [
+        "**/*.py"
+      ]
+    }
+  ]
+}
