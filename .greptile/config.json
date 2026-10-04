@@ -1,0 +1,121 @@
+{
+  "strictness": 2,
+  "commentTypes": [
+    "logic",
+    "syntax"
+  ],
+  "autoReview": [
+    "open"
+  ],
+  "statusCheck": true,
+  "fixWithAI": true,
+  "includeBranches": [
+    "main"
+  ],
+  "excludeAuthors": [
+    "*[bot]"
+  ],
+  "disabledLabels": [
+    "no-greptile"
+  ],
+  "ignorePatterns": "**/*.lock\n**/pnpm-lock.yaml\n**/package-lock.json\n**/uv.lock\n**/__pycache__/**\n**/*.log\n**/.DS_Store\n**/*.png\n**/*.jpg\n**/*.svg\n**/*.mp4\n.planning/**",
+  "summarySection": {
+    "included": true,
+    "collapsible": true,
+    "defaultOpen": true
+  },
+  "confidenceScoreSection": {
+    "included": true
+  },
+  "sequenceDiagramSection": {
+    "included": false
+  },
+  "context": {
+    "repos": []
+  },
+  "instructions": "gmail is the scheduled Cloud Run job that copies every Workspace mailbox into a BigQuery table through domain-wide delegation. Its constitution is AGENTS.md, listed in files.json. Portfolio-wide rules arrive from the organization layer as [envision-*] records and are not restated here; this folder holds only rules local to gmail.",
+  "rules": [
+    {
+      "id": "gmail-runtime-key-mount",
+      "severity": "high",
+      "scope": [
+        ".github/workflows/deploy.yml"
+      ],
+      "rule": "Removes the `SERVICE_ACCOUNT_FILE` entry from the deploy step's `env_vars` or the key mount from its `secrets` block; the action passes both as replacing flags, so the next deploy strips the delegation key and every scrape fails. Defined in `.github/workflows/deploy.yml`."
+    },
+    {
+      "id": "gmail-authenticated-invocation",
+      "severity": "high",
+      "scope": [
+        ".github/workflows/**"
+      ],
+      "rule": "Adds `--allow-unauthenticated` or an `allUsers` or `allAuthenticatedUsers` binding, or removes `--no-allow-unauthenticated` or the 'Verify no public access' step, which would let unauthenticated callers start a job that reads every mailbox in the domain. Defined in `.github/workflows/deploy.yml`."
+    },
+    {
+      "id": "gmail-actions-pinned-by-sha",
+      "severity": "high",
+      "scope": [
+        ".github/workflows/**"
+      ],
+      "rule": "Adds or edits a `uses:` reference that points at a tag or branch instead of a full-length commit SHA; the organization's Actions policy rejects such a workflow before any step runs, so pushes to main stop deploying without a failed step to notice. Defined in the pinning comment and `uses:` lines of `.github/workflows/deploy.yml`."
+    },
+    {
+      "id": "gmail-scheduler-oidc-in-place",
+      "severity": "medium",
+      "scope": [
+        ".github/workflows/deploy.yml"
+      ],
+      "rule": "Changes the 'Update Cloud Scheduler (OIDC)' step to delete or recreate the job, drops `--oidc-service-account-email` or `--oidc-token-audience`, or moves the step ahead of the deploy; the service rejects unauthenticated calls, and the step runs last and only updates or creates so a failed deploy never leaves the scrape without a scheduler job. Defined in `.github/workflows/deploy.yml`."
+    },
+    {
+      "id": "gmail-dwd-key-credentials",
+      "severity": "high",
+      "scope": [
+        "gmail_scraper.py"
+      ],
+      "rule": "Replaces the key-file credentials in `get_service_account_credentials` with plain Application Default Credentials, or drops a `with_subject` call, without adding a signer for domain-wide delegation; plain ADC cannot impersonate a mailbox, so every scrape returns `status: failed` while the GET health check stays green. Defined in `gmail_scraper.py`."
+    },
+    {
+      "id": "gmail-read-only-scopes",
+      "severity": "high",
+      "scope": [
+        "gmail_scraper.py"
+      ],
+      "rule": "Adds a scope to `GMAIL_SCOPES` or `ADMIN_SCOPES` beyond `gmail.readonly` and `admin.directory.user.readonly`, or a Gmail API call that sends, modifies, labels, trashes or deletes mail; the delegation grant listed in `README_CLOUDRUN.md` covers only those read-only scopes, so a new scope fails token minting for every mailbox. Defined in `gmail_scraper.py`."
+    },
+    {
+      "id": "gmail-row-schema-paired",
+      "severity": "high",
+      "scope": [
+        "gmail_scraper.py"
+      ],
+      "rule": "Adds, renames or removes a key in the row built by `process_message` without the same change to the `SchemaField` list in `ensure_table_exists`, the DDL in `ensure_alloydb_table`, the row mapping in `backfill_alloydb` and the schema table in `README_CLOUDRUN.md`; `ensure_table_exists` never alters an existing table and `insert_to_bigquery` logs insert errors and returns 0 instead of raising, so mismatched rows are dropped silently. Defined in `gmail_scraper.py`."
+    },
+    {
+      "id": "gmail-message-id-dedup",
+      "severity": "medium",
+      "scope": [
+        "gmail_scraper.py"
+      ],
+      "rule": "Removes or bypasses the per-user `message_id` skip that `get_existing_message_ids` feeds into `scrape_user_emails`; streaming inserts do not deduplicate, the incremental `after:` cursor is truncated to whole seconds and can re-list boundary messages, and `incremental: false` rescrapes rely on the skip alone, so dropping it writes duplicate rows. Defined in `gmail_scraper.py`."
+    },
+    {
+      "id": "gmail-image-copies-named-files",
+      "severity": "high",
+      "scope": [
+        "Dockerfile",
+        "**/*.py"
+      ],
+      "rule": "Adds a Python module that `main.py` or `gmail_scraper.py` imports without a matching `COPY` line in `Dockerfile`, or replaces the named copies with `COPY . .` or a copy of a key or env file; the runtime stage copies named files only, so a missing module crashes the container on start and a broad copy can bake a local key file into the image. Defined in `Dockerfile`."
+    },
+    {
+      "id": "gmail-no-mail-content-in-logs",
+      "severity": "high",
+      "scope": [
+        "**/*.py"
+      ],
+      "rule": "Adds a `print`, log call, error string or HTTP response field that carries message content or address headers (`body_text`, `body_snippet`, `subject`, `from_address`, `to_address`, `cc_address`, `bcc_address`) or a whole row; rows hold full mail for every mailbox in the domain, stdout lands in Cloud Logging and `main.py` returns results to the caller. Defined in `process_message` in `gmail_scraper.py`."
+    }
+  ],
+  "disabledRules": []
+}

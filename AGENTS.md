@@ -38,18 +38,22 @@ binding is present), then updates-in-place (or creates) the Cloud Scheduler job 
 deadline 1800s). The scheduler step never deletes the job, so a failed deploy cannot strand the cadence. Org policy requires every action
 in the workflow to be pinned to a full-length commit SHA — an unpinned `@vN` reference kills the run
 before any step executes (this silently blocked all deploys 2026-04 → 2026-08).
-`deploy.sh` is informational-only notes; `setup_scheduler.sh` and `cloudbuild.yaml` no longer exist
-(the Cloud Build routing from PR #4 never ran green and was removed 2026-08-02). Never deploy by hand.
+`deploy.sh` is informational-only notes; `setup_scheduler.sh` and `cloudbuild.yaml` no longer exist.
+A regional Cloud Build trigger, configured outside this repository, also fires on push to `main` and
+runs an image-only `run services update`, so every merge reaches production through both writers until
+the owner retires one. Check the live trigger list before reasoning about deploys. Never deploy by hand.
 
 ## Constraints and gotchas
 
 - Auth is service-account KEY FILE only: `gmail_scraper.py` loads `SERVICE_ACCOUNT_FILE`
   (default `./service-account-key.json`) via `from_service_account_file`, then `with_subject()` for
-  domain-wide delegation. There is NO ADC fallback: without the key file, every POST fails
-  (GET health check still works). The `Dockerfile` copies only `main.py` and `gmail_scraper.py`,
-  no key is baked into the image — so the deployed scrape path currently fails at runtime
-  (`status: failed`, HTTP 200). See "Known issue" in `README_CLOUDRUN.md`; fixing runtime auth is
-  an owner decision, not a drive-by fix.
+  domain-wide delegation. There is NO ADC fallback: without the key file, every scrape POST
+  returns `status: failed` with HTTP 200 (GET health check still works). The `Dockerfile` copies
+  only `main.py` and `gmail_scraper.py`; no key is baked into the image. In Cloud Run the deploy
+  step in `.github/workflows/deploy.yml` mounts the key from Secret Manager and points
+  `SERVICE_ACCOUNT_FILE` at it. Its `env_vars` and `secrets` blocks replace rather than merge, so
+  dropping either one silently strips runtime auth. See "Runtime Gmail credentials" in
+  `README_CLOUDRUN.md`; moving to keyless delegation is an owner decision, not a drive-by fix.
 - NEVER commit keys. `.gitignore` already blocks `service-account-key.json` and `*-key.json`; keep it so.
 - Env vars (defaults in `gmail_scraper.py`, set for prod in `deploy.yml`): `PROJECT_ID`, `DATASET_ID`,
   `TABLE_ID`, `ADMIN_EMAIL`, `SERVICE_ACCOUNT_FILE`. Container listens on port 8080.
@@ -74,3 +78,17 @@ before any step executes (this silently blocked all deploys 2026-04 → 2026-08)
 
 `.planning/codebase/INTERCONNECTIONS.md` (local, untracked) maps inbound/outbound integrations;
 this repo has no `.planning/STATE.md` or `ROADMAP.md`.
+
+## Portfolio
+This repository is part of the Envision Construction portfolio. Inside this repository, this file wins.
+Never, in any session:
+- Deploy a Cloud Build-triggered service by hand or write out a manual deploy command for one. Ship by
+  merging to the default branch, or re-run the trigger.
+- Read live database schemas or rows into code graphs, docs, commits, reviews or memory.
+- Report a financial figure without a named entity; ask which entity first.
+- Add a call or write path on a deprecated system (Procore, Sage Intacct, Brex).
+- Commit or print secrets, tokens or personal data.
+Ask first, and wait for an explicit yes: a push to main, a force-push, a visibility change.
+Before a change that crosses this repository's boundary (deploy path, another repository's API or data, auth,
+ownership), read https://github.com/Envision-Construction/central-command/blob/main/ORIENTATION.md and this
+repository's row in central-command `repo-manifest.json`; check the live trigger list rather than any prose.
